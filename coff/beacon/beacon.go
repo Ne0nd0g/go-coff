@@ -4,7 +4,11 @@ package beacon
 // https://www.cobaltstrike.com/downloads/beacon.h
 
 import (
+	"C"
 	"fmt"
+
+	// X-Packages
+	"golang.org/x/sys/windows"
 )
 
 // Data Parser API
@@ -31,7 +35,7 @@ func BeaconDataExtract(datap *DataParser, size *int) *string {
 	return nil
 }
 
-//  BeaconDataInt Extract a 4b integer
+// BeaconDataInt Extract a 4b integer
 func BeaconDataInt(datap *DataParser) {
 	fmt.Printf("BeaconDataInt...")
 }
@@ -63,7 +67,17 @@ func BeaconPrintf(beaconType int, data *string, len int) {
 	fmt.Println(fmt.Sprintf("\tLength: %d", len))
 }
 
-// BeaconOutput Send output to the Beacon operator
-func BeaconOutput(beaconType int, datat *string, len int) {
-	fmt.Printf("BeaconOutput...")
+// BeaconOutput retrieves the output from the executed COFF and prints it to STDOUT
+// The function signature is defined by Cobalt Strike's beacon.h
+//
+//export BeaconOutput
+func BeaconOutput(beaconType int, data uintptr, len int) {
+	out := make([]byte, len)
+	var readBytes *uintptr
+
+	err := windows.ReadProcessMemory(windows.CurrentProcess(), data, &out[0], uintptr(len), readBytes)
+	if err != nil {
+		fmt.Printf("Error reading process memory: %s\n", err)
+	}
+	fmt.Printf("\n[+] BeaconOutput:\n%s\n", out)
 }

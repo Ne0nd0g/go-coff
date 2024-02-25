@@ -3,17 +3,22 @@
 package coff
 
 import (
+	// Standard
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
-	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
 
-	"github.com/Ne0nd0g/go-coff/coff/beacon"
+	// X-Packages
 	"golang.org/x/sys/windows"
+
+	// Internal
+	"github.com/Ne0nd0g/go-coff/coff/beacon"
 )
 
 var Verbose bool
@@ -138,36 +143,88 @@ type FILE_HEADER struct {
 }
 
 // https://docs.microsoft.com/en-us/windows/win32/debug/pe-format#section-table-section-headers
+// https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-image_section_header
+//
+//	typedef struct _IMAGE_SECTION_HEADER {
+//	 BYTE  Name[IMAGE_SIZEOF_SHORT_NAME];
+//	 union {
+//	   DWORD PhysicalAddress;
+//	   DWORD VirtualSize;
+//	 } Misc;
+//	 DWORD VirtualAddress;
+//	 DWORD SizeOfRawData;
+//	 DWORD PointerToRawData;
+//	 DWORD PointerToRelocations;
+//	 DWORD PointerToLinenumbers;
+//	 WORD  NumberOfRelocations;
+//	 WORD  NumberOfLinenumbers;
+//	 DWORD Characteristics;
+//	} IMAGE_SECTION_HEADER, *PIMAGE_SECTION_HEADER;
+//
 // Length: 40
 type SECTION_HEADER struct {
-	Name                 uint64
-	VirtualSize          uint32
-	VirtualAddress       uint32
-	SizeOfRawData        uint32
-	PointerToRawData     uint32
+	// Name is an 8-byte, null-padded UTF-8 string.
+	// There is no terminating null character if the string is exactly eight characters long.
+	// For longer names, this member contains a forward slash (/) followed by an ASCII representation of a decimal number that is an offset into the string table.
+	// Executable images do not use a string table and do not support section names longer than eight characters.
+	Name [8]byte
+	// Misc is a union of two DWORD structures: PhysicalAddress and VirtualSize.
+	// Misc.PhysicalAddress is the file address.
+	// Misc.VirtualSize The total size of the section when loaded into memory, in bytes.
+	// If this value is greater than the SizeOfRawData member, the section is filled with zeroes.
+	// This field is valid only for executable images and should be set to 0 for object files.
+	// The total size of the section when loaded into memory.
+	// If this value is greater than SizeOfRawData, the section is zero-padded.
+	// This field is valid only for executable images and should be set to zero for object files.
+	VirtualSize uint32
+	// VirtualAddress is the address of the first byte of the section when loaded into memory, relative to the image base.
+	// For object files, this is the address of the first byte before relocation is applied.
+	VirtualAddress uint32
+	// SizeOfRawData is the size of the initialized data on disk, in bytes.
+	// This value must be a multiple of the FileAlignment member of the IMAGE_OPTIONAL_HEADER structure.
+	// If this value is less than the VirtualSize member, the remainder of the section is filled with zeroes.
+	// If the section contains only uninitialized data, the member is zero.
+	SizeOfRawData uint32
+	// PointerToRawData is the file pointer to the first page of the section within the COFF file.
+	// For executable images, this must be a multiple of FileAlignment from the optional header.
+	// For object files, the value should be aligned on a 4-byte boundary for the best performance.
+	// When a section contains only uninitialized data, this field should be zero.
+	PointerToRawData uint32
+	// PointerToRelocations is the file pointer to the beginning of relocation entries for the section.
+	// This is set to zero for executable images or if there are no relocations.
 	PointerToRelocations uint32
+	// PointerToLinenumbers is the file pointer to the beginning of line-number entries for the section.
+	// This is set to zero if there are no COFF line numbers.
+	// This value should be zero for an image because COFF debugging information is deprecated.
 	PointerToLinenumbers uint32
-	NumberOfRelocations  uint16
-	NumberOfLinenumbers  uint16
-	Characteristics      uint32
+	// NumberOfRelocations is the number of relocation entries for the section. This is set to zero for executable images.
+	NumberOfRelocations uint16
+	// NumberOfLinenumbers is the number of line-number entries for the section.
+	// This value should be zero for an image because COFF debugging information is deprecated.
+	NumberOfLinenumbers uint16
+	// Characteristics is the flags that describe the characteristics of the section.
+	// See the Section Characteristic Flags constants IMAGE_SCN_*
+	Characteristics uint32
 }
 
 // https://docs.microsoft.com/en-us/windows/win32/debug/pe-format#coff-relocations-object-only
 // Length: 10
 // Due to padding, unsafe.Sizeof() reports 12
 type RELOCATION struct {
-	// VirtualAddress The address of the item to which relocation is applied.
+	// VirtualAddress is the address of the item to which relocation is applied.
 	// This is the offset from the beginning of the section, plus the value of the section's RVA/Offset field. See Section Table (Section Headers).
 	// For example, if the first byte of the section has an address of 0x10, the third byte has an address of 0x12.
 	VirtualAddress uint32
-	// SybmolTableIndex A zero-based index into the symbol table.
+	// SymbolTableIndex A zero-based index into the symbol table.
 	// This symbol gives the address that is to be used for the relocation.
 	// If the specified symbol has section storage class, then the symbol's address is the address with the first section of the same name.
 	SymbolTableIndex uint32
-	// Type A value that indicates the kind of relocation that should be performed. Valid relocation types depend on machine type.
+	// Type A value that indicates the kind of relocation that should be performed.
+	// Valid relocation types depend on the machine type.
 	Type uint16
 }
 
+// SYMBOL represents a COFF symbol table entry
 // https://docs.microsoft.com/en-us/windows/win32/debug/pe-format#coff-symbol-table
 // Length: 18
 // Due to padding, unsafe.Sizeof() reports 20 https://dave.cheney.net/2015/10/09/padding-is-hard
@@ -216,7 +273,7 @@ func ParseObject(data []byte) (object OBJECT, err error) {
 	}
 
 	if Debug {
-		fmt.Printf(fmt.Sprintf("[DEBUG] COFF_FILE_HEADER(%d): %+v\n", unsafe.Sizeof(object.Header), object.Header))
+		fmt.Printf("[DEBUG] COFF_FILE_HEADER(%d): %+v\n", unsafe.Sizeof(object.Header), object.Header)
 	}
 
 	// Validate that the object is for a x64 host
@@ -227,18 +284,18 @@ func ParseObject(data []byte) (object OBJECT, err error) {
 
 	// Validate that file is an OBJECT and not an IMAGE
 	if object.Header.SizeOfOptionalHeader != 0 {
-		err = fmt.Errorf("the object contained an optional header of size %d; Object files should not have this header!", object.Header.SizeOfOptionalHeader)
+		err = fmt.Errorf("the object contained an optional header of size %d; Object files should not have this header", object.Header.SizeOfOptionalHeader)
 		return
 	}
 
 	// Read in Sections
 	if Verbose {
-		fmt.Printf(fmt.Sprintf("[-] Parsing Sections...\n"))
+		fmt.Printf("[-] Parsing Sections...\n")
 	}
 
 	for i := 0; i < int(object.Header.NumberOfSections); i++ {
 		var section SECTION
-		// Postion of the section header relative to the file header * section number
+		// Position of the section header relative to the file header * section number
 		start := unsafe.Sizeof(object.Header) + (unsafe.Sizeof(SECTION_HEADER{}) * uintptr(i))
 		stop := start + unsafe.Sizeof(SECTION_HEADER{})
 		err = binary.Read(bytes.NewBuffer(data[start:stop]), binary.LittleEndian, &section.Header)
@@ -248,21 +305,21 @@ func ParseObject(data []byte) (object OBJECT, err error) {
 
 		object.Sections = append(object.Sections, section)
 		if Debug {
-			name := make([]byte, 8)
-			binary.LittleEndian.PutUint64(name, section.Header.Name)
-			fmt.Println(fmt.Sprintf("[DEBUG] Section (%d) %s: %+v", i, name, section))
+			//name := make([]byte, 8)
+			//binary.LittleEndian.PutUint64(name, section.Header.Name)
+			//fmt.Println(fmt.Sprintf("[DEBUG] Section (%d) %s: %+v", i, name, section))
+			fmt.Printf("[DEBUG] Section (%d) %s:%+v\n", i, section.Header.Name, section.Header)
 		}
 
 	}
 
 	if Debug {
-		fmt.Println(fmt.Sprintf("[DEBUG] Sections(%d): %+v", len(object.Sections), object.Sections))
+		fmt.Printf("[DEBUG] Sections(%d): %+v\n", len(object.Sections), object.Sections)
 	}
 
 	// Read in String Table
-
 	if Verbose {
-		fmt.Println(fmt.Sprintf("[-] Parsing Strings Table..."))
+		fmt.Println("[-] Parsing Strings Table...")
 	}
 
 	// Immediately following the COFF symbol table is the COFF string table.
@@ -278,22 +335,22 @@ func ParseObject(data []byte) (object OBJECT, err error) {
 	object.Strings = data[pointerToStringTable : pointerToStringTable+sizeOfStringTable]
 
 	if Debug {
-		fmt.Println(fmt.Sprintf("[DEBUG] PointerToStringTable: %d", pointerToStringTable))
-		fmt.Println(fmt.Sprintf("[DEBUG] Strings Table (%d):\n%s", binary.LittleEndian.Uint32(data[pointerToStringTable:pointerToStringTable+4]), object.Strings))
+		fmt.Printf("[DEBUG] PointerToStringTable: %d\n", pointerToStringTable)
+		fmt.Printf("[DEBUG] Strings Table (%d):\n%s\n", binary.LittleEndian.Uint32(data[pointerToStringTable:pointerToStringTable+4]), object.Strings)
 	}
 
 	// Read in Relocations
 	if Verbose {
-		fmt.Println(fmt.Sprintf("[-] Parsing Section Relocations and Data..."))
+		fmt.Println("[-] Parsing Section Relocations and Data...")
 	}
 
 	for s, section := range object.Sections {
-		name := make([]byte, 8)
-		binary.LittleEndian.PutUint64(name, section.Header.Name)
-		// Makre sure there are relocations to process
+		//name := make([]byte, 8)
+		//binary.LittleEndian.PutUint64(name, section.Header.Name)
+		// Make sure there are relocations to process
 		if section.Header.NumberOfRelocations > 0 {
 			if Verbose {
-				fmt.Println(fmt.Sprintf("[-] Parsing %d relocations for %s section...", section.Header.NumberOfRelocations, name))
+				fmt.Printf("[-] Parsing %d relocations for %s section...\n", section.Header.NumberOfRelocations, object.SectionHeaderName(section.Header.Name))
 			}
 			for i := 0; i < int(section.Header.NumberOfRelocations); i++ {
 				var relocation RELOCATION
@@ -306,23 +363,23 @@ func ParseObject(data []byte) (object OBJECT, err error) {
 				object.Sections[s].Relocations = append(object.Sections[s].Relocations, relocation)
 
 				if Debug {
-					fmt.Println(fmt.Sprintf("\t[DEBUG] Relocation: %+v", relocation))
+					fmt.Printf("\t[DEBUG] Relocation: %+v\n", relocation)
 				}
 			}
 		}
 		// Section Data
 		if Verbose {
-			fmt.Println(fmt.Sprintf("[-] Parsing %s Section Data %d-bytes", name, section.Header.SizeOfRawData))
+			fmt.Printf("[-] Parsing %s Section Data %d-bytes\n", object.SectionHeaderName(section.Header.Name), section.Header.SizeOfRawData)
 		}
 		object.Sections[s].Data = data[section.Header.PointerToRawData : section.Header.PointerToRawData+section.Header.SizeOfRawData]
 	}
 
 	// Read in Symbols
 	if Verbose {
-		fmt.Println(fmt.Sprintf("[-] Parsing Symbols..."))
+		fmt.Println("[-] Parsing Symbols...")
 	}
 	if Debug {
-		fmt.Println(fmt.Sprintf("[DEBUG] PointerToSymbolTable: %d", object.Header.PointerToSymbolTable))
+		fmt.Printf("[DEBUG] PointerToSymbolTable: %d\n", object.Header.PointerToSymbolTable)
 	}
 
 	for i := 0; i < int(object.Header.NumberOfSymbols); i++ {
@@ -330,7 +387,7 @@ func ParseObject(data []byte) (object OBJECT, err error) {
 		start := object.Header.PointerToSymbolTable + (uint32(18) * uint32(i))
 		stop := start + uint32(18)
 		if Debug {
-			fmt.Println(fmt.Sprintf("[DEBUG] Start: %d, Stop: %d, Bytes: %v", start, stop, data[start:stop]))
+			fmt.Printf("[DEBUG] Start: %d, Stop: %d, Bytes: %v\n", start, stop, data[start:stop])
 		}
 		err = binary.Read(bytes.NewBuffer(data[start:stop]), binary.LittleEndian, &symbol)
 		if err != nil {
@@ -339,17 +396,16 @@ func ParseObject(data []byte) (object OBJECT, err error) {
 		}
 		object.Symbols = append(object.Symbols, symbol)
 		if Debug {
-			fmt.Println(fmt.Sprintf("[DEBUG] Symbol (%s): %+v", symbol.String(object.Strings), symbol))
+			fmt.Printf("[DEBUG] Symbol (%s): %+v\n", symbol.String(object.Strings), symbol)
 		}
 	}
 	return
 }
 
+// Load maps the Object into memory and applies relocations
 func (object *OBJECT) Load() error {
-
 	// Windows API functions
 	VirtualAlloc := kernel32.NewProc("VirtualAlloc")
-	//VirtualProtect := kernel32.NewProc("VirtualProtectEx")
 
 	sectionAddress = make([]uintptr, object.Header.NumberOfSections)
 
@@ -359,18 +415,15 @@ func (object *OBJECT) Load() error {
 
 	// Sections
 	for sectionIndex, section := range object.Sections {
-		name := make([]byte, 8)
-		binary.LittleEndian.PutUint64(name, section.Header.Name)
-
 		if section.Header.SizeOfRawData > 0 {
 			// Allocate memory for the section
 			if Verbose {
-				fmt.Printf(fmt.Sprintf("\n[-] Allocating memory for %s section of size %d...\n", name, section.Header.SizeOfRawData))
+				fmt.Printf("\n[-] Allocating memory for %s section of size %d...\n", object.SectionHeaderName(section.Header.Name), section.Header.SizeOfRawData)
 			}
 
 			addr, _, err := VirtualAlloc.Call(0, uintptr(section.Header.SizeOfRawData), MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE)
 
-			if err != syscall.Errno(0) {
+			if !errors.Is(err, syscall.Errno(0)) {
 				return fmt.Errorf("there was an error calling VirtualAlloc: %s", err)
 			}
 
@@ -381,46 +434,47 @@ func (object *OBJECT) Load() error {
 			sectionAddress[sectionIndex] = addr
 
 			if Debug {
-				fmt.Println(fmt.Sprintf("[DEBUG] Allocated memory for %s at 0x%x", name, addr))
+				fmt.Printf("[DEBUG] Allocated memory for %s at 0x%x\n", object.SectionHeaderName(section.Header.Name), addr)
 			}
 
 			// Copy the section data to the allocated memory segment
 			if Verbose {
-				fmt.Printf(fmt.Sprintf("[-] Copying %s section data of size %d to allocated memory address 0x%x\n", name, uintptr(section.Header.SizeOfRawData), addr))
+				fmt.Printf("[-] Copying %s section data of size %d to allocated memory address 0x%x\n", object.SectionHeaderName(section.Header.Name), uintptr(section.Header.SizeOfRawData), addr)
 			}
 			_, _, err = RtlCopyMemory.Call(addr, uintptr(unsafe.Pointer(&section.Data[0])), uintptr(section.Header.SizeOfRawData))
 
-			if err != syscall.Errno(0) {
-				return fmt.Errorf("Error calling RtlCopyMemory:\n%s", err)
+			if !errors.Is(err, syscall.Errno(0)) {
+				return fmt.Errorf("error calling RtlCopyMemory: %s", err)
 			}
 		} else {
 			if Verbose {
-				fmt.Printf(fmt.Sprintf("\n[-] Skipping memory allocation of %s section of size %d\n", name, section.Header.SizeOfRawData))
+				fmt.Printf("\n[-] Skipping memory allocation of %s section of size %d\n", object.SectionHeaderName(section.Header.Name), section.Header.SizeOfRawData)
 			}
 		}
 	}
 
-	// Create the Global Offset Talbe
+	// Create the Global Offset Table
 	addr, _, err := VirtualAlloc.Call(0, uintptr(2048), MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE)
-	if err != syscall.Errno(0) {
+	if !errors.Is(err, syscall.Errno(0)) {
 		return fmt.Errorf("there was an error calling VirtualAlloc: %s", err)
 	}
 	got = unsafe.Pointer(addr)
 
-	if Debug {
-		fmt.Println(fmt.Sprintf("\n[DEBUG] Allocated memory for GOT at 0x%x", addr))
+	if Verbose {
+		fmt.Printf("\n[-] Allocated memory for GOT at 0x%x\n", addr)
 	}
 
 	// Now that the sections are mapped to memory, execute relocations
 	for sectionIndex, section := range object.Sections {
-		name := make([]byte, 8)
-		binary.LittleEndian.PutUint64(name, section.Header.Name)
+		if section.Header.NumberOfRelocations <= 0 {
+			continue
+		}
 		if Verbose {
-			fmt.Printf(fmt.Sprintf("\n[-] Applying %d relocations for %s section...\n", section.Header.NumberOfRelocations, name))
+			fmt.Printf("\n[-] Applying %d relocations for %s section...\n", section.Header.NumberOfRelocations, object.SectionHeaderName(section.Header.Name))
 		}
 
 		if Debug {
-			fmt.Println(fmt.Sprintf("[DEBUG] Section: %+v", section.Header))
+			fmt.Printf("[DEBUG] Section: %+v\n", section.Header)
 		}
 
 		// Relocations
@@ -428,9 +482,8 @@ func (object *OBJECT) Load() error {
 			symbol := object.Symbols[relocation.SymbolTableIndex]
 			symbolName := symbol.String(object.Strings)
 			if Debug {
-				fmt.Printf(fmt.Sprintf("\n[DEBUG] Relocation record for %s section: %+v\n", name, relocation))
-				fmt.Printf(fmt.Sprintf("\t[DEBUG] Relocation symbol record (%s): %+v\n", symbolName, symbol))
-
+				fmt.Printf("\n[DEBUG] Relocation record for %s section: %+v\n", object.SectionHeaderName(section.Header.Name), relocation)
+				fmt.Printf("\t[DEBUG] Relocation symbol record (%s): %+v\n", symbolName, symbol)
 			}
 
 			var addr uintptr
@@ -450,10 +503,9 @@ func (object *OBJECT) Load() error {
 						proc = s[1]
 					}
 					if Verbose {
-						fmt.Println(fmt.Sprintf("\t[-] Importing External Module: %s, Procedure: %s", module, proc))
+						fmt.Printf("\t[-] Importing External Module: %s, Procedure: %s\n", module, proc)
 					}
 					if strings.HasPrefix(module, "Beacon") {
-						fmt.Println(fmt.Sprintf("\t[*] Beacon module: %s", module))
 						addr, err = beaconFunction(module)
 						if err != nil {
 							log.Fatal(err)
@@ -465,29 +517,31 @@ func (object *OBJECT) Load() error {
 						if err != nil {
 							log.Fatal(err)
 						}
-
-						// Destination, Source, Length
-						x := int64(addr)
-						y := uintptr(unsafe.Pointer(&x))
-						//fmt.Println(fmt.Sprintf("\t[DEBUG] Pointer: 0x%x, Pointer-to-Pointer: 0x%x", x, y))
-						_, _, err := RtlCopyMemory.Call(uintptr(got)+uintptr(gotCounter*8), y, 8)
-
-						if err != syscall.Errno(0) {
-							return fmt.Errorf("Error calling RtlCopyMemory:\n%s", err)
-						}
-						addr = uintptr(got) + uintptr(gotCounter*8)
-						gotCounter++
 					}
+					// Destination, Source, Length
+					x := int64(addr)
+					y := uintptr(unsafe.Pointer(&x))
+					if Debug {
+						fmt.Printf("\t[DEBUG] Global Offset Table: writing 0x%x to 0x%x for %s!%s at pointer 0x%x\n", x, uintptr(got)+uintptr(gotCounter*8), module, proc, y)
+					}
+					_, _, err = RtlCopyMemory.Call(uintptr(got)+uintptr(gotCounter*8), y, 8)
+
+					if !errors.Is(err, syscall.Errno(0)) {
+						return fmt.Errorf("there was an error calling RtlCopyMemory: %s", err)
+					}
+					addr = uintptr(got) + uintptr(gotCounter*8)
+					gotCounter++
+
 				}
 			// IMAGE_SYM_CLASS_STATIC is the offset of the symbol within the section. If the Value field is zero, then the symbol represents a section name.
 			case IMAGE_SYM_CLASS_STATIC:
 				if len(sectionAddress) <= int(symbol.SectionNumber) {
-					log.Fatal(fmt.Sprintf("unable to perform relocation because section %d has not been mapped into memory", symbol.SectionNumber))
+					log.Fatalf("unable to perform relocation because section %d has not been mapped into memory", symbol.SectionNumber)
 				}
 				if Debug {
-					fmt.Printf(fmt.Sprintf("\t[DEBUG] Symbol name: %s, Symbol StorageClass: IMAGE_SYM_CLASS_STATIC(0x%d) at 0x%x\n", symbolName, symbol.StorageClass, sectionAddress[symbol.SectionNumber-1]))
+					fmt.Printf("\t[DEBUG] Symbol name: %s, Symbol StorageClass: IMAGE_SYM_CLASS_STATIC(0x%d) at 0x%x\n", symbolName, symbol.StorageClass, sectionAddress[symbol.SectionNumber-1])
 					if symbol.NumberOfAuxSymbols > 0 {
-						fmt.Printf(fmt.Sprintf("\t[DEBUG] Next symbol record: %+v\n", object.Symbols[relocation.SymbolTableIndex+1]))
+						fmt.Printf("\t[DEBUG] Next symbol record: %+v\n", object.Symbols[relocation.SymbolTableIndex+1])
 					}
 				}
 
@@ -495,7 +549,7 @@ func (object *OBJECT) Load() error {
 				offsetBytes := make([]byte, 4)
 				copy(offsetBytes, object.Sections[sectionIndex].Data[relocation.VirtualAddress:relocation.VirtualAddress+4])
 				if Debug {
-					fmt.Printf(fmt.Sprintf("\t[DEBUG] Relocation's VirtualAddress contents: %v\n", offsetBytes))
+					fmt.Printf("\t[DEBUG] Relocation's VirtualAddress contents: %v\n", offsetBytes)
 				}
 				// Honestly not sure how to use this "offset" value, going to just add it to the symbol section table for now
 				offset := binary.LittleEndian.Uint32(offsetBytes)
@@ -506,62 +560,62 @@ func (object *OBJECT) Load() error {
 					log.Fatal("The code required to handle a symbol with a value other than zero for the IMAGE_SYM_CLASS_STATIC class is missing...")
 				}
 			default:
-				log.Fatal(fmt.Sprintf("unhandled symbol storge class %d", symbol.StorageClass))
+				log.Fatalf("unhandled symbol storge class %d", symbol.StorageClass)
 			}
-
 			// Do relocation
-			object.relocate(sectionIndex, relocation, addr)
-		}
-	}
-
-	// Excute the function
-	var functionAddr uintptr
-	for _, symbol := range object.Symbols {
-		fmt.Printf(fmt.Sprintf("Symbol: %+v, %s:%v\n", symbol, symbol.String(object.Strings), symbol.Name))
-		if symbol.Name == [8]byte{103, 111, 0, 0, 0, 0, 0, 0} {
-			functionAddr = sectionAddress[symbol.SectionNumber-1] + uintptr(symbol.Value)
-			if Debug {
-				fmt.Printf(fmt.Sprintf("Found the go function at: 0x%x\n", functionAddr))
-				fmt.Printf(fmt.Sprintf("Unsafe: %x\n", unsafe.Pointer(functionAddr)))
-				fmt.Printf(fmt.Sprintf("1: %v\n", (*execute)(unsafe.Pointer(functionAddr))))
-				//fmt.Printf(fmt.Sprintf("2: %v\n", *(*execute)(unsafe.Pointer(functionAddr))))
+			err = object.relocate(sectionIndex, relocation, addr)
+			if err != nil {
+				return err
 			}
-
-			fmt.Println("Calling VirtualProtect...")
-			var oldProtect uintptr
-			VirtualProtect := kernel32.NewProc("VirtualProtect")
-			_, _, err := VirtualProtect.Call(
-				sectionAddress[symbol.SectionNumber-1],
-				uintptr(object.Sections[symbol.SectionNumber].Header.SizeOfRawData),
-				PAGE_EXECUTE_READ,
-				uintptr(unsafe.Pointer(&oldProtect)),
-			)
-			if err != syscall.Errno(0) {
-				fmt.Printf(fmt.Sprintf("there was an error calling VirtualProtect: %s\n", err))
-			}
-			//fmt.Println(fmt.Sprintf("Old Protect: 0x%x", oldProtect))
-
-			fmt.Println("Executing the funciton...")
-			//f := *(*func(uintptr, int))(unsafe.Pointer(functionAddr))
-			//f(0, 0)
-			r, _, errno := syscall.Syscall(functionAddr, uintptr(0), uintptr(0), 0, 0)
-			fmt.Println(fmt.Sprintf("Return: %d, ErrNo: %d", r, errno))
-
 		}
 	}
 	return nil
 }
 
-/*
-	void go(char * args, int alen) {
-	      BeaconPrintf(CALLBACK_OUTPUT, "Hello World: %s", args);
+// Run executes the provided COFF function
+func (object *OBJECT) Run(entrypoint string) error {
+	if Verbose {
+		fmt.Printf("[-] Executing the COFF '%s'function...\n", entrypoint)
 	}
-*/
-type execute func(uintptr, int)
 
+	// Execute the function
+	var functionAddr uintptr
+	// Find the function address
+	for _, symbol := range object.Symbols {
+		//fmt.Printf("Symbol: %+v, %s:%v\n", symbol, symbol.String(object.Strings), symbol.Name)
+		if symbol.Name == [8]byte{103, 111, 0, 0, 0, 0, 0, 0} {
+			functionAddr = sectionAddress[symbol.SectionNumber-1] + uintptr(symbol.Value)
+			if Debug {
+				fmt.Printf("[DEBUG] Found the go function at: 0x%x\n", functionAddr)
+			}
+		}
+	}
+
+	if functionAddr == 0 {
+		return fmt.Errorf("unable to find the entrypoint function: %s", entrypoint)
+	}
+
+	if Debug {
+		fmt.Printf("[DEBUG] Executing the '%s' function at 0x%0X...\n", entrypoint, functionAddr)
+		fmt.Println("[DEBUG] Press Enter to continue...")
+		fmt.Scanln()
+	}
+
+	r, _, err := syscall.SyscallN(functionAddr, 0)
+
+	if !errors.Is(err, syscall.Errno(0)) {
+		return fmt.Errorf("there was an error calling the entrypoint function: %s", err)
+	}
+	if Debug {
+		fmt.Printf("[DEBUG] Executing the entrypoint function returned: %d\n", r)
+	}
+	return nil
+}
+
+// relocate applies the relocation to the section
 func (object *OBJECT) relocate(section int, relocation RELOCATION, symbol uintptr) error {
 	if Debug {
-		fmt.Printf(fmt.Sprintf("\t[DEBUG] Relocating section %d with relocation record: %+v to symbol pointer: 0x%x\n", section, relocation, symbol))
+		fmt.Printf("\t[DEBUG] Relocating section %d with relocation record: %+v to symbol pointer: 0x%x\n", section, relocation, symbol)
 	}
 
 	// Make sure the section has already been mapped into memory
@@ -570,34 +624,40 @@ func (object *OBJECT) relocate(section int, relocation RELOCATION, symbol uintpt
 	}
 
 	switch relocation.Type {
-	// IMAGE_REL_AMD64_REL32 is the 32-bit relative address from the byte following the relocation.
+	case IMAGE_REL_AMD64_ADDR32NB:
+		// IMAGE_REL_AMD64_ADDR32NB is the 32-bit address without an image base (RVA).
+		// TODO: Actually implement this
+		if Debug {
+			fmt.Printf("\t[DEBUG] Handling relocation for IMAGE_REL_AMD64_ADDR32NB storage class with symbol: 0x%x\n", symbol)
+		}
 	case IMAGE_REL_AMD64_REL32:
+		// IMAGE_REL_AMD64_REL32 is the 32-bit relative address from the byte following the relocation.
 		// Copy the 32-bit address of the symbol to the section + relocation relative address
 		if Debug {
-			fmt.Printf(fmt.Sprintf("\t[DEBUG] Handling relocation for IMAGE_REL_AMD64_REL32 storage class with symbol: 0x%x\n", symbol))
+			fmt.Printf("\t[DEBUG] Handling relocation for IMAGE_REL_AMD64_REL32 storage class with symbol: 0x%x\n", symbol)
 		}
 		relative := make([]byte, 4)
 
 		switch object.Symbols[relocation.SymbolTableIndex].StorageClass {
 		case IMAGE_SYM_CLASS_EXTERNAL:
-			fmt.Println(fmt.Sprintf("\tIMAGE_SYM_CLASS_EXTERNAL: VA: 0x%x - Symbol 0x%x = 0x%x", uint32(sectionAddress[section])+relocation.VirtualAddress, symbol, (uint32(sectionAddress[section])+relocation.VirtualAddress)-uint32(symbol)))
-			// binary.LittleEndian.PutUint32(relative, uint32(symbol)-(uint32(sectionAddress[section])+relocation.VirtualAddress-4))
+			if Verbose {
+				fmt.Printf("\t[*] IMAGE_SYM_CLASS_EXTERNAL: VA: 0x%x - Symbol 0x%x = 0x%x\n", uint32(sectionAddress[section])+relocation.VirtualAddress, symbol, (uint32(sectionAddress[section])+relocation.VirtualAddress)-uint32(symbol))
+			}
 			binary.LittleEndian.PutUint32(relative, uint32(symbol)-(uint32(sectionAddress[section])+relocation.VirtualAddress+4))
 		case IMAGE_SYM_CLASS_STATIC:
 			// ([Symbol Section Address] + [RVA contents]) - [Relocation VA +4]
 			binary.LittleEndian.PutUint32(relative, uint32(symbol)-(uint32(sectionAddress[section])+(relocation.VirtualAddress+4)))
 		}
-		//binary.LittleEndian.PutUint32(relative, uint32(symbol)-(uint32(sectionAddress[section])+relocation.VirtualAddress+4))
 		destination := sectionAddress[section] + uintptr(relocation.VirtualAddress)
 		source := unsafe.Pointer(&relative[0])
 		if Debug {
-			fmt.Printf(fmt.Sprintf("\t[DEBUG] Calling RtlCopyMemory with 0x%x, 0x%x, 4\n", destination, relative))
+			fmt.Printf("\t[DEBUG] Calling RtlCopyMemory with 0x%x, 0x%x, 4\n", destination, relative)
 		}
 		// Destination, Source, Length
 		_, _, err := RtlCopyMemory.Call(destination, uintptr(source), 4)
 
-		if err != syscall.Errno(0) {
-			return fmt.Errorf("Error calling RtlCopyMemory:\n%s", err)
+		if !errors.Is(err, syscall.Errno(0)) {
+			return fmt.Errorf("there was an error calling RtlCopyMemory: %s", err)
 		}
 	default:
 		return fmt.Errorf("unhandled relocation type: %d", relocation.Type)
@@ -605,6 +665,23 @@ func (object *OBJECT) relocate(section int, relocation RELOCATION, symbol uintpt
 	return nil
 }
 
+// SectionHeaderName returns the name of the section from the Section Header
+// If the first byte of the section name is "/" (0x2F), the name is longer than 8 bytes and the name is an offset into the String Table
+func (object *OBJECT) SectionHeaderName(name [8]byte) string {
+	if name[0] == 0x2F {
+		offset, err := strconv.Atoi(string(bytes.Split(name[1:], []byte{0x00})[0]))
+		if err != nil {
+			fmt.Printf("there was a problem converting the section name '%s' to an integer: %s\n", name[1:], err)
+		}
+		if len(object.Strings) < offset {
+			return ""
+		}
+		return string(bytes.Split(object.Strings[offset:], []byte{0x00})[0])
+	}
+	return string(bytes.Trim(name[:], "\x00"))
+}
+
+// getProcAddress returns the address of the specified procedure in the specified module
 // https://docs.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getprocaddress
 func getProcAddress(module, proc string) (uintptr, error) {
 	hModule, err := loadLibrary(module)
@@ -614,19 +691,19 @@ func getProcAddress(module, proc string) (uintptr, error) {
 	GetProcAddress := kernel32.NewProc("GetProcAddress")
 
 	if Verbose {
-		fmt.Println(fmt.Sprintf("\t[-] Calling Kernel32 GetProcAddress for %s!%s...", module, proc))
+		fmt.Printf("\t[-] Calling Kernel32 GetProcAddress for %s!%s...\n", module, proc)
 	}
 	FARPROC, _, err := GetProcAddress.Call(hModule, uintptr(unsafe.Pointer(&[]byte(proc)[0])))
-	if err != syscall.Errno(0) {
+	if !errors.Is(err, syscall.Errno(0)) {
 		return FARPROC, fmt.Errorf("there was an error getting the %s!%s procedure:\n%s", module, proc, err)
 	}
 	if Debug {
-		fmt.Println(fmt.Sprintf("\t[DEBUG] %s!%s address: 0x%x", module, proc, FARPROC))
+		fmt.Printf("\t[DEBUG] %s!%s address: 0x%x\n", module, proc, FARPROC)
 	}
-
 	return FARPROC, nil
 }
 
+// loadLibrary loads the specified module into the address space of the calling process
 // https://docs.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibrarya
 func loadLibrary(module string) (uintptr, error) {
 	// Kernel32 is already loaded
@@ -634,63 +711,23 @@ func loadLibrary(module string) (uintptr, error) {
 		return kernel32.Handle(), nil
 	}
 
-	LoadLibary := kernel32.NewProc("LoadLibraryA")
+	LoadLibrary := kernel32.NewProc("LoadLibraryA")
 	mod := append([]byte(module), 0)
 
 	if Verbose {
-		fmt.Println(fmt.Sprintf("\t[-] Calling LoadLibraryA for %s", module))
+		fmt.Printf("\t[-] Calling LoadLibraryA for %s\n", module)
 	}
 
-	hModule, _, err := LoadLibary.Call(uintptr(unsafe.Pointer(&mod[0])))
-	if err != syscall.Errno(0) {
+	hModule, _, err := LoadLibrary.Call(uintptr(unsafe.Pointer(&mod[0])))
+	if !errors.Is(err, syscall.Errno(0)) {
 		return hModule, fmt.Errorf("there was an error calling LoadLibrarA for %s:\n%s", module, err)
 	}
 
 	if Debug {
-		fmt.Println(fmt.Sprintf("\t[DEBUG] %s handle: 0x%x", module, hModule))
+		fmt.Printf("\t[DEBUG] %s handle: 0x%x\n", module, hModule)
 	}
 
 	return hModule, nil
-}
-
-// https://docs.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-enumprocessmodules
-func enumProcessModules() (handles []uintptr, err error) {
-
-	GetCurrentProcess := kernel32.NewProc("GetCurrentProcess")
-	EnumProcessModules := kernel32.NewProc("EnumProcessModules")
-
-	if Verbose {
-		fmt.Println("[-] Calling GetCurrentProcess()...")
-	}
-
-	hProcess, _, err := GetCurrentProcess.Call()
-	if err != syscall.Errno(0) {
-		err = fmt.Errorf("there was an error callling GetCurrentProcess():\n%s", err)
-		return
-	}
-
-	if Debug {
-		fmt.Println(fmt.Sprintf("[DEBUG] Current process handle: 0x%x", hProcess))
-	}
-
-	var cb uintptr
-	var lpcbNeeded uintptr
-
-	if Verbose {
-		fmt.Println("[-] Calling EnumProcessModules...")
-	}
-
-	ret, _, err := EnumProcessModules.Call(hProcess, uintptr(unsafe.Pointer(&handles)), cb, lpcbNeeded)
-	if err != syscall.Errno(0) || ret == 0 {
-		err = fmt.Errorf("there was an error calling EnumProcessModules with return code %d:\n%s", ret, err)
-		return
-	}
-
-	if Debug {
-		fmt.Println(fmt.Sprintf("[DEBUG] EnumProcessModules return code: %d, array size: %d, byte size: %d, module handle array: %+v", ret, cb, lpcbNeeded, handles))
-	}
-	err = nil
-	return
 }
 
 // String evaluates the first four bytes of the Symbol Name to determine where it's full name can be found and returns the Symbol Name as a string
@@ -700,25 +737,36 @@ func (symbol *SYMBOL) String(table []byte) string {
 		// The Symbol name is longer than 8 bytes
 		start := binary.LittleEndian.Uint32(symbol.Name[4:8])
 		//fmt.Println(fmt.Sprintf("\t[DEBUG] Symbol Name String Table Offset: %d", start))
-		return fmt.Sprintf("%s", bytes.Split(table[start:], []byte{0x00})[0])
+		return string(bytes.Split(table[start:], []byte{0x00})[0])
 	}
-
 	// Does not require the String Table
 	name := make([]byte, 8)
 	binary.LittleEndian.PutUint64(name, binary.LittleEndian.Uint64(symbol.Name[:]))
 	return string(name)
 }
 
+// beaconFunction returns the address of the Beacon API function from this program
 func beaconFunction(function string) (addr uintptr, err error) {
+	if Verbose {
+		fmt.Printf("\t[-] Resolving Beacon API function: %s...\n", function)
+	}
+
 	switch function {
 	case "BeaconOutput":
-		addr = reflect.ValueOf(beacon.BeaconOutput).Pointer()
-		tmp := beacon.BeaconOutput
-		ptr1 := *(*uintptr)(unsafe.Pointer(&tmp)) //Way 1
-		fmt.Printf("Beacon function: %s @ 0x%x WAY 1\n", function, uint64(ptr1))
+		// If the function is not referenced here, it will not be exported by CGO
+		f := beacon.BeaconOutput
+		if Debug {
+			fmt.Printf("\t[DEBUG] BeaconOutput function: 0x%x\n", &f)
+		}
 	default:
 		err = fmt.Errorf("unable to resolve Beacon API function %s", function)
+		return
 	}
-	fmt.Printf("Beacon function: %s @ %x\n", function, addr)
+
+	// Get the address of the function
+	addr, err = windows.GetProcAddress(0, function)
+	if Debug {
+		fmt.Printf("\t[DEBUG] Beacon function: %s @ 0x%x\n", function, addr)
+	}
 	return
 }

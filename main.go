@@ -1,9 +1,9 @@
 package main
 
 import (
+	// Standard
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 
@@ -32,6 +32,7 @@ func main() {
 	if err != nil {
 		log.Fatal(fmt.Sprintf("there was an error reading the file: %s", err))
 	}
+	fmt.Printf("[+] Successfully read in the file: %s\n", *filePath)
 
 	if debug {
 		fmt.Printf(fmt.Sprintf("Read in %d bytes\n", len(bof)))
@@ -42,12 +43,21 @@ func main() {
 	if err != nil {
 		log.Fatal(fmt.Sprintf("there was an error parsing the COFF: %s", err))
 	}
+	fmt.Printf("[+] Successfully parsed the COFF\n")
 
+	// Load the COFF
 	err = obj.Load()
 	if err != nil {
 		log.Fatal(fmt.Sprintf("there was an error loading the object file:\n%s", err))
 	}
+	fmt.Printf("[+] Successfully loaded the COFF\n")
 
+	// Execute the COFF
+	err = obj.Run("go")
+	if err != nil {
+		log.Fatal(fmt.Sprintf("there was an error executing the object file:\n%s", err))
+	}
+	fmt.Printf("[+] Successfully executed the COFF\n")
 }
 
 // read validates the provided file path exists, reads in the entire file as bytes, and returns them
@@ -71,5 +81,5 @@ func read(filePath string) ([]byte, error) {
 		fmt.Println(fmt.Sprintf("[-] Reading in file %s", filePath))
 	}
 
-	return ioutil.ReadFile(filePath)
+	return os.ReadFile(filePath)
 }
