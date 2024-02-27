@@ -5,6 +5,7 @@ package beacon
 
 import (
 	"fmt"
+	"unsafe"
 
 	// X-Packages
 	"golang.org/x/sys/windows"
@@ -21,17 +22,20 @@ import (
 // } datap;
 
 type DataParser struct {
-	original *string
-	buffer   *string
+	original uintptr
+	buffer   uintptr
 	length   int
 	size     int
 }
 
 // BeaconDataExtract Extract a length-prefixed binary blob. The size argument may be NULL.
 // If an address is provided, size is populated with the number-of-bytes extracted.
-func BeaconDataExtract(datap *DataParser, size *int) *string {
-	fmt.Printf("BeaconDataExtract...")
-	return nil
+// DECLSPEC_IMPORT char *  BeaconDataExtract(datap * parser, int * size);
+func BeaconDataExtract(datap *DataParser, size *int) uintptr {
+	fmt.Printf("[BeaconDataExtract] DataParser - original: 0x%x, buffer: 0x%x, length: %d, size: %d, size: %d\n", datap.original, datap.buffer, datap.length, datap.size, size)
+	fmt.Printf("[BeaconDataExtract] Data: %s\n", windows.UTF16PtrToString((*uint16)(unsafe.Pointer(datap.buffer))))
+	// Return the address where the "char*" is pointing to
+	return datap.buffer
 }
 
 // BeaconDataInt Extract a 4b integer
@@ -46,8 +50,13 @@ func BeaconDataLength(datap *DataParser) int {
 }
 
 // BeaconDataParse Prepare a data parser to extract arguments from the specified buffer
-func BeaconDataParse(datap *DataParser, char *string, size int) {
-	fmt.Println("BeaconDataParser...")
+func BeaconDataParse(datap *DataParser, char uintptr, size int) uintptr {
+	fmt.Printf("BeaconDataParse - DataParser: %+v, Char: 0x%x, Size: %d\n", datap, char, size)
+	datap.original = char
+	datap.buffer = char
+	datap.length = size
+	fmt.Printf("BeaconDataParse - DataParser: original: 0x%x\n", datap.original)
+	return 1
 }
 
 // BeaconDataShort Extract a 2b integer
@@ -73,5 +82,5 @@ func BeaconOutput(beaconType int, data uintptr, len int) uintptr {
 		fmt.Printf("Error reading process memory: %s\n", err)
 	}
 	fmt.Printf("\n[+] BeaconOutput:\n%s\n", out)
-	return 0
+	return 1
 }

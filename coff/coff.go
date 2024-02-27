@@ -572,7 +572,7 @@ func (object *OBJECT) Load() error {
 }
 
 // Run executes the provided COFF function
-func (object *OBJECT) Run(entrypoint string) error {
+func (object *OBJECT) Run(entrypoint string, args uintptr, length uint64) error {
 	if Verbose {
 		fmt.Printf("[-] Executing the COFF '%s'function...\n", entrypoint)
 	}
@@ -600,7 +600,7 @@ func (object *OBJECT) Run(entrypoint string) error {
 		fmt.Scanln()
 	}
 
-	r, _, err := syscall.SyscallN(functionAddr, 0)
+	r, _, err := syscall.SyscallN(functionAddr, args, uintptr(length))
 
 	if !errors.Is(err, syscall.Errno(0)) {
 		return fmt.Errorf("there was an error calling the entrypoint function: %s", err)
@@ -756,6 +756,10 @@ func beaconFunction(function string) (addr uintptr, err error) {
 	}
 
 	switch function {
+	case "BeaconDataExtract":
+		addr = windows.NewCallback(beacon.BeaconDataExtract)
+	case "BeaconDataParse":
+		addr = windows.NewCallback(beacon.BeaconDataParse)
 	case "BeaconOutput":
 		addr = windows.NewCallback(beacon.BeaconOutput)
 	case "BeaconPrintf":
