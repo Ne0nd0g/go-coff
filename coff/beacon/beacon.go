@@ -4,7 +4,6 @@ package beacon
 // https://www.cobaltstrike.com/downloads/beacon.h
 
 import (
-	"C"
 	"fmt"
 
 	// X-Packages
@@ -58,20 +57,14 @@ func BeaconDataShort(datap *DataParser) {
 
 // Output API
 // The Output API returns output to Cobalt Strike.
-
-// BeaconPrintf Format and present output to the Beacon operator
-func BeaconPrintf(beaconType int, data *string, len int) {
-	fmt.Println("BeaconPrintf...")
-	fmt.Println(fmt.Sprintf("\tType: %d", beaconType))
-	fmt.Println(fmt.Sprintf("\tData: 0x%x", data))
-	fmt.Println(fmt.Sprintf("\tLength: %d", len))
+func BeaconPrintf(beaconType int, data uintptr) uintptr {
+	fmt.Printf("[BeaconPrintf] BeaconType: %d, Data: %d\n", beaconType, data)
+	return 0
 }
 
 // BeaconOutput retrieves the output from the executed COFF and prints it to STDOUT
 // The function signature is defined by Cobalt Strike's beacon.h
-//
-//export BeaconOutput
-func BeaconOutput(beaconType int, data uintptr, len int) {
+func BeaconOutput(beaconType int, data uintptr, len int) uintptr {
 	out := make([]byte, len)
 	var readBytes *uintptr
 
@@ -80,4 +73,5 @@ func BeaconOutput(beaconType int, data uintptr, len int) {
 		fmt.Printf("Error reading process memory: %s\n", err)
 	}
 	fmt.Printf("\n[+] BeaconOutput:\n%s\n", out)
+	return 0
 }

@@ -531,7 +531,6 @@ func (object *OBJECT) Load() error {
 					}
 					addr = uintptr(got) + uintptr(gotCounter*8)
 					gotCounter++
-
 				}
 			// IMAGE_SYM_CLASS_STATIC is the offset of the symbol within the section. If the Value field is zero, then the symbol represents a section name.
 			case IMAGE_SYM_CLASS_STATIC:
@@ -630,6 +629,12 @@ func (object *OBJECT) relocate(section int, relocation RELOCATION, symbol uintpt
 		if Debug {
 			fmt.Printf("\t[DEBUG] Handling relocation for IMAGE_REL_AMD64_ADDR32NB storage class with symbol: 0x%x\n", symbol)
 		}
+		switch object.Symbols[relocation.SymbolTableIndex].StorageClass {
+		case IMAGE_SYM_CLASS_STATIC:
+			if Verbose {
+				fmt.Printf("\t[*] IMAGE_SYM_CLASS_STATIC: VA: 0x%x - Symbol 0x%x = 0x%x\n", uint32(sectionAddress[section])+relocation.VirtualAddress, symbol, (uint32(sectionAddress[section])+relocation.VirtualAddress)-uint32(symbol))
+			}
+		}
 	case IMAGE_REL_AMD64_REL32:
 		// IMAGE_REL_AMD64_REL32 is the 32-bit relative address from the byte following the relocation.
 		// Copy the 32-bit address of the symbol to the section + relocation relative address
@@ -695,7 +700,7 @@ func getProcAddress(module, proc string) (uintptr, error) {
 	}
 	FARPROC, _, err := GetProcAddress.Call(hModule, uintptr(unsafe.Pointer(&[]byte(proc)[0])))
 	if !errors.Is(err, syscall.Errno(0)) {
-		return FARPROC, fmt.Errorf("there was an error getting the %s!%s procedure:\n%s", module, proc, err)
+		return FARPROC, fmt.Errorf("there was an error getting the %s!%s procedure: %s", module, proc, err)
 	}
 	if Debug {
 		fmt.Printf("\t[DEBUG] %s!%s address: 0x%x\n", module, proc, FARPROC)
@@ -717,10 +722,9 @@ func loadLibrary(module string) (uintptr, error) {
 	if Verbose {
 		fmt.Printf("\t[-] Calling LoadLibraryA for %s\n", module)
 	}
-
 	hModule, _, err := LoadLibrary.Call(uintptr(unsafe.Pointer(&mod[0])))
 	if !errors.Is(err, syscall.Errno(0)) {
-		return hModule, fmt.Errorf("there was an error calling LoadLibrarA for %s:\n%s", module, err)
+		return hModule, fmt.Errorf("there was an error calling LoadLibraryA for %s: %s", module, err)
 	}
 
 	if Debug {
@@ -753,20 +757,15 @@ func beaconFunction(function string) (addr uintptr, err error) {
 
 	switch function {
 	case "BeaconOutput":
-		// If the function is not referenced here, it will not be exported by CGO
-		f := beacon.BeaconOutput
-		if Debug {
-			fmt.Printf("\t[DEBUG] BeaconOutput function: 0x%x\n", &f)
-		}
+		addr = windows.NewCallback(beacon.BeaconOutput)
+	case "BeaconPrintf":
+		addr = windows.NewCallback(beacon.BeaconPrintf)
 	default:
 		err = fmt.Errorf("unable to resolve Beacon API function %s", function)
 		return
 	}
-
-	// Get the address of the function
-	addr, err = windows.GetProcAddress(0, function)
 	if Debug {
-		fmt.Printf("\t[DEBUG] Beacon function: %s @ 0x%x\n", function, addr)
+		fmt.Printf("\t[DEBUG] '%s' function at 0x%x\n", function, addr)
 	}
 	return
 }
