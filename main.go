@@ -2,6 +2,7 @@ package main
 
 import (
 	// Standard
+
 	"flag"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ func main() {
 	flag.BoolVar(&verbose, "verbose", false, "Enable verbose output")
 	flag.BoolVar(&debug, "debug", false, "Enable debug output")
 	filePath := flag.String("bof", "", "File path to the Beacon Object File (BOF)")
+
 	flag.Parse()
 
 	if *filePath == "" {
@@ -52,8 +54,8 @@ func main() {
 	}
 	fmt.Printf("[+] Successfully loaded the COFF\n")
 
-	// Execute the COFF
-	err = obj.Run("go")
+	// Run the COFF
+	err = obj.Run("go", flag.Args())
 	if err != nil {
 		log.Fatal(fmt.Sprintf("there was an error executing the object file:\n%s", err))
 	}

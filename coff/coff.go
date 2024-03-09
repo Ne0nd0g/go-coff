@@ -28,6 +28,7 @@ var kernel32 = windows.NewLazySystemDLL("kernel32.dll")
 var ntdll = windows.NewLazySystemDLL("ntdll.dll")
 var RtlCopyMemory = ntdll.NewProc("RtlCopyMemory")
 var sectionAddress []uintptr
+var libraries = make(map[string]uintptr)
 
 // AMD64
 const (
@@ -513,10 +514,11 @@ func (object *OBJECT) Load() error {
 					}
 					// External Procedure
 					if proc != "" {
-						addr, err = getProcAddress(module, proc)
+						addr2, err := getProcAddress(module, proc)
 						if err != nil {
 							log.Fatal(err)
 						}
+						addr = uintptr(addr2)
 					}
 					// Destination, Source, Length
 					x := int64(addr)
@@ -572,7 +574,7 @@ func (object *OBJECT) Load() error {
 }
 
 // Run executes the provided COFF function
-func (object *OBJECT) Run(entrypoint string, args uintptr, length uint64) error {
+func (object *OBJECT) Run(entrypoint string, data []string) error {
 	if Verbose {
 		fmt.Printf("[-] Executing the COFF '%s'function...\n", entrypoint)
 	}
@@ -594,13 +596,23 @@ func (object *OBJECT) Run(entrypoint string, args uintptr, length uint64) error 
 		return fmt.Errorf("unable to find the entrypoint function: %s", entrypoint)
 	}
 
+	// Parse and pack the arguments
+	buff, err := beacon.BOFPack(data)
+	if err != nil {
+		return fmt.Errorf("there was an error packing the arguments: %s", err)
+	}
+	args := uintptr(0)
+	if len(buff) > 0 {
+		args = uintptr(unsafe.Pointer(&buff[0]))
+	}
+
 	if Debug {
 		fmt.Printf("[DEBUG] Executing the '%s' function at 0x%0X...\n", entrypoint, functionAddr)
 		fmt.Println("[DEBUG] Press Enter to continue...")
 		fmt.Scanln()
 	}
 
-	r, _, err := syscall.SyscallN(functionAddr, args, uintptr(length))
+	r, _, err := syscall.SyscallN(functionAddr, args, uintptr(len(buff)))
 
 	if !errors.Is(err, syscall.Errno(0)) {
 		return fmt.Errorf("there was an error calling the entrypoint function: %s", err)
@@ -716,6 +728,12 @@ func loadLibrary(module string) (uintptr, error) {
 		return kernel32.Handle(), nil
 	}
 
+	// See if the library is already loaded
+	if _, ok := libraries[module]; ok {
+		//fmt.Printf("\t[-] %s is already loaded at 0x%x\n", module, libraries[module])
+		return libraries[module], nil
+	}
+
 	LoadLibrary := kernel32.NewProc("LoadLibraryA")
 	mod := append([]byte(module), 0)
 
@@ -727,10 +745,12 @@ func loadLibrary(module string) (uintptr, error) {
 		return hModule, fmt.Errorf("there was an error calling LoadLibraryA for %s: %s", module, err)
 	}
 
+	// Update the global libraries map
+	libraries[module] = hModule
+
 	if Debug {
 		fmt.Printf("\t[DEBUG] %s handle: 0x%x\n", module, hModule)
 	}
-
 	return hModule, nil
 }
 
@@ -758,12 +778,18 @@ func beaconFunction(function string) (addr uintptr, err error) {
 	switch function {
 	case "BeaconDataExtract":
 		addr = windows.NewCallback(beacon.BeaconDataExtract)
+	case "BeaconDataInt":
+		addr = windows.NewCallback(beacon.BeaconDataInt)
 	case "BeaconDataParse":
 		addr = windows.NewCallback(beacon.BeaconDataParse)
+	case "BeaconDataShort":
+		addr = windows.NewCallback(beacon.BeaconDataShort)
 	case "BeaconOutput":
 		addr = windows.NewCallback(beacon.BeaconOutput)
 	case "BeaconPrintf":
 		addr = windows.NewCallback(beacon.BeaconPrintf)
+		//addr, err = windows.GetProcAddress(windows.Handle(0), "BeaconPrintf")
+		//fmt.Printf("\t[DEBUG] '%s' function at 0x%x\n", function, addr)
 	default:
 		err = fmt.Errorf("unable to resolve Beacon API function %s", function)
 		return
